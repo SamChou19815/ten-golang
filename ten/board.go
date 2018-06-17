@@ -73,7 +73,7 @@ func (b *Board) copy() *Board {
  * Obtain a list of all legal moves for AI.
  */
 func (b *Board) allLegalMovesForAI() []*move {
-	list := make([]*move, 0, 40) // 20 will be enough for most cases.
+	list := make([]*move, 0, 40) // 40 will be enough for most cases.
 	if b.currentBigSquareLegalPosition != -1 {
 		for j := 0; j < 9; j++ {
 			// Can only move in the specified square
