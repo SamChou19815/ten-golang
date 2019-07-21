@@ -1,8 +1,8 @@
 package main
 
-import "../ten"
+import "developersam.com/ten-golang/ten"
 
 // Entry point
 func main() {
-	ten.RunAGameBetweenTwoAIs(1500)
+	ten.RunAGameBetweenTwoAIs(1.5)
 }

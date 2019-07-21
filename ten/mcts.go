@@ -1,108 +1,81 @@
-/*
- * MCTS stands for Monte Carlo tree search.
- */
 package ten
 
 import (
 	"math/rand"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
-	"runtime"
 )
-
-/**
- * It's constructed with a initial [board] and the [timeLimit] in milliseconds.
- */
-type mcts struct {
-	timeLimit             int64
-	currentPlayerIdentity int
-	tree                  *node
-}
 
 var cores = runtime.NumCPU() / 2
 
-/*
- * Select and return a node starting from parent, according to selection rule in MCTS.
- */
-func (m *mcts) selection() *node {
-	var root = m.tree
+// selection returns a node starting from parent, according to selection rule in MCTS.
+func selection(root *node) *node {
 	isPlayer := true
 	for {
 		// Find optimal move and loop down.
-		if root.children == nil {
-			return root
-		}
-		var children = *root.children
+		var children = root.children
 		length := len(children)
 		if length == 0 {
 			return root
 		}
-		var n = children[0]
-		max := n.getUpperConfidenceBound(isPlayer)
+		var selectedNode = children[0]
+		max := selectedNode.getUpperConfidenceBound(isPlayer)
 		for i := 1; i < length; i++ {
 			var node = children[i]
 			ucb := node.getUpperConfidenceBound(isPlayer)
 			if ucb > max {
 				max = ucb
-				n = node
+				selectedNode = node
 			}
 		}
 		isPlayer = !isPlayer // switch player identity
-		root = n
+		root = selectedNode
 	}
 }
 
-/*
- * Perform simulation for a specific node [nodeToBeSimulated] and gives back a win value between 0 and 1.
- */
-func (m *mcts) simulation(nodeToBeSimulated *node) int {
-	var boardBeforeSimulation = *nodeToBeSimulated.board
-	b1 := boardBeforeSimulation.copy()
-	status := b1.gameStatus()
+// simulation runs a simulation for a specific board and gives back a win value between 0 and 1.
+func simulation(playerIdentity int8, board *Board) int {
+	currentBoard := board
+	status := currentBoard.GameStatus()
 	for status == 0 {
-		moves := b1.allLegalMovesForAI()
+		moves := currentBoard.allLegalMovesForAI()
 		move := moves[rand.Intn(len(moves))]
-		b1.makeMoveWithoutCheck(move)
-		status = b1.gameStatus()
+		currentBoard = currentBoard.makeMoveWithoutCheck(move)
+		status = currentBoard.GameStatus()
 	}
-	if status == m.currentPlayerIdentity {
+	if status == playerIdentity {
 		return 1
-	} else {
-		return 0
 	}
+	return 0
 }
 
 /*
  * Small struct to give goroutine job
  */
 type job struct {
-	board        *Board
-	selectedNode *node
-	move         *move
+	board          *Board
+	selectedNode   *node
+	move           *Move
+	playerIdentity int8
 }
 
-/*
- * Small struct to give goroutine result
- */
-type result struct {
-	node     *node
-	winValue int
-}
-
-/*
- * Compute the value of a new child node.
- */
-func (m *mcts) computeNewChildNodeWorker(jobs <-chan *job, ch chan *result, wg *sync.WaitGroup) {
+func computeNewChildNodeWorker(jobs <-chan *job, ch chan *node, wg *sync.WaitGroup) {
 	for job := range jobs {
-		b := *job.board
-		b1 := b.copy()
+		board := job.board
 		move := job.move
-		b1.makeMoveWithoutCheck(move)
-		n := makeNode(job.selectedNode, move, b1)
-		winValue := m.simulation(n)
+		newBoard := board.makeMoveWithoutCheck(move)
+		nodeAfterSimulation := &node{
+			parent:                 job.selectedNode,
+			move:                   move,
+			board:                  newBoard,
+			children:               emptyNodeList,
+			winningProbNumerator:   simulation(job.playerIdentity, newBoard),
+			winningProbDenominator: 1,
+		}
 		// Push result down to channel
-		ch <- &result{node: n, winValue: winValue}
+		ch <- nodeAfterSimulation
 		// We are done.
 		wg.Done()
 	}
@@ -111,67 +84,82 @@ func (m *mcts) computeNewChildNodeWorker(jobs <-chan *job, ch chan *result, wg *
 /*
  * A method that connected all parts of of MCTS to build an evaluation tree.
  */
-func (m *mcts) think() {
+func think(root *node, playerIdentity int8, timeLimit float64) int {
 	tStart := time.Now()
 	simulationCounter := 0
-	for time.Now().Sub(tStart).Nanoseconds() < m.timeLimit {
-		var selectedNode = m.selection()
+	for time.Now().Sub(tStart).Seconds() < timeLimit {
+		var selectedNode = selection(root)
 		b := *selectedNode.board
 		// Expansion: Get all legal moves from a current board
 		allLegalMoves := b.allLegalMovesForAI()
 		length := len(allLegalMoves)
-		if length > 0 {
+		if length == 0 {
+			if playerIdentity == b.GameStatus() {
+				selectedNode.updateWinningProbability(1, 1)
+			} else {
+				selectedNode.updateWinningProbability(0, 1)
+			}
+			simulationCounter++
+		} else {
 			// Help GC
-			selectedNode.dereferenceBoard()
-		}
-		simulationCounter += length // Update statistics
-		newChildren := make([]*node, length)
-		jobs := make(chan *job, length)
-		ch := make(chan *result, length)
-		wg := sync.WaitGroup{}
-		wg.Add(length)
-		// Use worker pool.
-		for w := 0; w < cores; w++ {
-			// Setup workers
-			go m.computeNewChildNodeWorker(jobs, ch, &wg)
-		}
-		for i := 0; i < length; i++ {
-			move := allLegalMoves[i]
-			job := job{
-				board:        &b,
-				selectedNode: selectedNode,
-				move:         move,
+			selectedNode.board = nil
+			// Parallelize the simulation
+			newChildren := make([]*node, length)
+			jobs := make(chan *job, length)
+			ch := make(chan *node, length)
+			wg := sync.WaitGroup{}
+			wg.Add(length)
+			// Use worker pool.
+			for w := 0; w < cores; w++ {
+				// Setup workers
+				go computeNewChildNodeWorker(jobs, ch, &wg)
 			}
 			// Add jobs to workers.
-			jobs <- &job
+			for i := 0; i < length; i++ {
+				move := allLegalMoves[i]
+				job := job{
+					board:          &b,
+					selectedNode:   selectedNode,
+					move:           move,
+					playerIdentity: playerIdentity,
+				}
+				jobs <- &job
+			}
+			close(jobs)
+			wg.Wait()
+			close(ch)
+			// Collect simulation results
+			i := 0
+			winCount := 0
+			for node := range ch {
+				newChildren[i] = node
+				winCount += node.winningProbNumerator
+				i++
+			}
+			selectedNode.children = newChildren
+			selectedNode.updateWinningProbability(winCount, length)
+			simulationCounter += length // Update statistics
 		}
-		close(jobs)
-		wg.Wait()
-		close(ch)
-		i := 0
-		for res := range ch {
-			node := res.node
-			node.winningStatisticsPlusOne(res.winValue)
-			newChildren[i] = node
-			i++
-		}
-		selectedNode.children = &newChildren
 	}
 	println("Number of simulations: " + strconv.Itoa(simulationCounter))
+	return simulationCounter
+}
+
+// MctsResponse is the response from the MCTS AI.
+type MctsResponse struct {
+	Move               []int `json:"move"`
+	WinningProbability int   `json:"winningPercentage"`
+	SimulationCounter  int   `json:"simulationCounter"`
 }
 
 /*
  * Give the final move chosen by AI with the format:
- * (...decided move, winning probability percentage by that move).
+ * (...decided move, winning probability percentage by that move, simulation counter).
  */
-func selectMove(board *Board, timeLimit int64) (*move, int) {
-	mcts := &mcts{
-		timeLimit:             timeLimit * 1000000,
-		currentPlayerIdentity: (*board).currentPlayerIdentity,
-		tree:                  makeRootNode(board),
-	}
-	mcts.think()
-	children := *mcts.tree.children
+func selectMove(board *Board, timeLimit float64) *MctsResponse {
+	root := &node{board: board, children: emptyNodeList}
+	simulationCounter := think(root, board.playerIdentity, timeLimit)
+	children := root.children
 	length := len(children)
 	nodeChosen := children[0]
 	maxWinningProbability := nodeChosen.winningProbability()
@@ -185,5 +173,9 @@ func selectMove(board *Board, timeLimit int64) (*move, int) {
 	}
 	move := nodeChosen.move
 	// Fill in information
-	return move, maxWinningProbability
+	return &MctsResponse{
+		Move:               []int{move.a, move.b},
+		WinningProbability: maxWinningProbability,
+		SimulationCounter:  simulationCounter,
+	}
 }
