@@ -1,6 +1,6 @@
 # ten-golang
 
-[![Build Status](https://action-badges.now.sh/SamChou19815/ten-golang)](https://github.com/SamChou19815/ten-golang)
+[![Build Status](https://github.com/SamChou19815/ten-golang/workflows/CI/badge.svg)](https://github.com/SamChou19815/ten-golang)
 
 Go implementation of TEN with MCTS AI and a simple Cloud Function endpoint.
 
