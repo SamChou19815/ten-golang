@@ -21,7 +21,7 @@ go run developersam.com/ten-golang/main
 
 ```bash
 # We need more memory to create MCTS simulation trees.
-gcloud functions deploy HandleTenAIMoveRequest --runtime go111 --trigger-http --memory=2048MB
+gcloud functions deploy HandleTenAIMoveRequest --runtime go113 --trigger-http --memory=2048MB
 ```
 
 ## Additional Rules
